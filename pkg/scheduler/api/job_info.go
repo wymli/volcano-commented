@@ -102,14 +102,14 @@ func (info *TopologyInfo) Clone() *TopologyInfo {
 
 // TaskInfo will have all infos about the task
 type TaskInfo struct {
-	UID TaskID
+	UID TaskID // pod.uid
 	Job JobID
 
 	Name      string
 	Namespace string
 
 	// Resreq is the resource that used when task running.
-	Resreq *Resource
+	Resreq *Resource // 建议 google 下 abbr for resource，看看 resource 的缩写到底是啥。res 已经被 result 占了，不要混用。
 	// InitResreq is the resource that used to launch a task.
 	InitResreq *Resource
 
@@ -141,6 +141,7 @@ type TaskInfo struct {
 func getJobID(pod *v1.Pod) JobID {
 	if gn, found := pod.Annotations[v1beta1.KubeGroupNameAnnotationKey]; found && len(gn) != 0 {
 		// Make sure Pod and PodGroup belong to the same namespace.
+		// 就是 ns/pg_name
 		jobID := fmt.Sprintf("%s/%s", pod.Namespace, gn)
 		return JobID(jobID)
 	}
@@ -314,9 +315,9 @@ type JobInfo struct {
 
 	// All tasks of the Job.
 	TaskStatusIndex       map[TaskStatus]tasksMap
-	Tasks                 tasksMap
-	TaskMinAvailable      map[TaskID]int32
-	TaskMinAvailableTotal int32
+	Tasks                 tasksMap         // 这里的 TaskID 是 pod.uid
+	TaskMinAvailable      map[TaskID]int32 // 这里的 TaskID 是 taskName
+	TaskMinAvailableTotal int32            // 所有的task的 minAvail 总和
 
 	Allocated    *Resource
 	TotalRequest *Resource
@@ -508,7 +509,7 @@ func (ji *JobInfo) addTaskIndex(ti *TaskInfo) {
 // AddTaskInfo is used to add a task to a job
 func (ji *JobInfo) AddTaskInfo(ti *TaskInfo) {
 	ji.Tasks[ti.UID] = ti
-	ji.addTaskIndex(ti)
+	ji.addTaskIndex(ti) // 冷知识，这里作者命名的意思是添加进 task 索引。笑掉大牙。先不说这个 index 完全没必要，实际函数做的事情也是 addTaskByStatus
 	ji.TotalRequest.Add(ti.Resreq)
 	if AllocatedStatus(ti.Status) {
 		ji.Allocated.Add(ti.Resreq)
@@ -683,6 +684,7 @@ func (ji *JobInfo) TaskSchedulingReason(tid TaskID) (reason string, msg string) 
 }
 
 // ReadyTaskNum returns the number of tasks that are ready or that is best-effort.
+// 已经通过资源预分配的 pod
 func (ji *JobInfo) ReadyTaskNum() int32 {
 	occupied := 0
 	occupied += len(ji.TaskStatusIndex[Bound])
@@ -708,6 +710,7 @@ func (ji *JobInfo) WaitingTaskNum() int32 {
 }
 
 // CheckTaskValid returns whether each task of job is valid.
+// 即当前已经提交的 pod 数是否超过minAvail, 如果pod 数都不够 minAvail, 都不用去看资源了
 func (ji *JobInfo) CheckTaskValid() bool {
 	// if job minAvailable is less than sum of(task minAvailable), skip this check
 	if ji.MinAvailable < ji.TaskMinAvailableTotal {
@@ -756,7 +759,7 @@ func (ji *JobInfo) CheckTaskReady() bool {
 
 		if status == Pending {
 			for _, task := range tasks {
-				if task.InitResreq.IsEmpty() {
+				if task.InitResreq.IsEmpty() { // 一会用task.InitResreq.IsEmpty()，一会用task.BestEffort, 我谢谢你啊
 					occupiedMap[getTaskID(task.Pod)]++
 				}
 			}

@@ -49,6 +49,11 @@ func (enqueue *Action) Execute(ssn *framework.Session) {
 	queueSet := sets.NewString()
 	jobsMap := map[api.QueueID]*util.PriorityQueue{}
 
+	// 对队列和 job 按优先级排序
+	// 这里的写法很蠢，而且把这种脏逻辑放在主流程里。实际上直接平铺所有的 job, 按 queue+job 的优先级排序就行了
+	// jobQ = priorityQ()
+	// jobQ.push({job, queue_priority, job_priority}) for job in jobs
+	// jobQ.pop() ...
 	for _, job := range ssn.Jobs {
 		if job.ScheduleStartTimestamp.IsZero() {
 			ssn.Jobs[job.UID].ScheduleStartTimestamp = metav1.Time{
@@ -60,6 +65,7 @@ func (enqueue *Action) Execute(ssn *framework.Session) {
 				job.Queue, job.Namespace, job.Name)
 			continue
 		} else if !queueSet.Has(string(queue.UID)) {
+			// 很烦这种夹带私货，你要往 queueset 插入，你就新增一个 if，干嘛放在两个毫不相干的 elif里面，真 sb
 			klog.V(5).Infof("Added Queue <%s> for Job <%s/%s>",
 				queue.Name, job.Namespace, job.Name)
 
@@ -68,6 +74,7 @@ func (enqueue *Action) Execute(ssn *framework.Session) {
 		}
 
 		if job.IsPending() {
+			// 这里写一个 PushOrCreate 是不是会死
 			if _, found := jobsMap[job.Queue]; !found {
 				jobsMap[job.Queue] = util.NewPriorityQueue(ssn.JobOrderFn)
 			}
@@ -78,11 +85,14 @@ func (enqueue *Action) Execute(ssn *framework.Session) {
 
 	klog.V(3).Infof("Try to enqueue PodGroup to %d Queues", len(jobsMap))
 
+	// 既然打算处理所有的 job，那么优先的做法肯定是把所有的 job 按优先级排序。
+	// 我们这里是需要按 q+j 的双重优先级，q优先。
 	for {
 		if queues.Empty() {
 			break
 		}
 
+		// 取出最高优的队列里的最高优的job
 		queue := queues.Pop().(*api.QueueInfo)
 
 		// skip the Queue that has no pending job
@@ -99,6 +109,7 @@ func (enqueue *Action) Execute(ssn *framework.Session) {
 		}
 
 		// Added Queue back until no job in Queue.
+		// 那你Pop出来干啥，直接 Front() 会死？
 		queues.Push(queue)
 	}
 }

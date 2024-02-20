@@ -29,6 +29,7 @@ type pendingState struct {
 func (ps *pendingState) Execute(action v1alpha1.Action) error {
 	switch action {
 	case v1alpha1.RestartJobAction:
+		// 杀掉所有 pod，将 job 状态置为 Restarting
 		return KillJob(ps.job, PodRetainPhaseNone, func(status *vcbatch.JobStatus) bool {
 			status.RetryCount++
 			status.State.Phase = vcbatch.Restarting
@@ -36,22 +37,26 @@ func (ps *pendingState) Execute(action v1alpha1.Action) error {
 		})
 
 	case v1alpha1.AbortJobAction:
+		// 杀掉除了 Succeeded 和 Failed 的 pod，将 job 状态置为 Aborting
 		return KillJob(ps.job, PodRetainPhaseSoft, func(status *vcbatch.JobStatus) bool {
 			status.State.Phase = vcbatch.Aborting
 			return true
 		})
 	case v1alpha1.CompleteJobAction:
+		// 杀掉除了 Succeeded 和 Failed 的 pod，将 job 状态置为 Completing
 		return KillJob(ps.job, PodRetainPhaseSoft, func(status *vcbatch.JobStatus) bool {
 			status.State.Phase = vcbatch.Completing
 			return true
 		})
 	case v1alpha1.TerminateJobAction:
+		// 杀掉除了 Succeeded 和 Failed 的 pod，将 job 状态置为 Terminating
 		return KillJob(ps.job, PodRetainPhaseSoft, func(status *vcbatch.JobStatus) bool {
 			status.State.Phase = vcbatch.Terminating
 			return true
 		})
 	default:
 		return SyncJob(ps.job, func(status *vcbatch.JobStatus) bool {
+			// 如果拉起的 pod >= MinAvailable 了 (由于事件有延迟，有些 pod 可能已经成功/失败了)，将 job 状态置为 Running
 			if ps.job.Job.Spec.MinAvailable <= status.Running+status.Succeeded+status.Failed {
 				status.State.Phase = vcbatch.Running
 				return true

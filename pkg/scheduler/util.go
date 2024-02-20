@@ -87,6 +87,7 @@ func unmarshalSchedulerConf(confStr string) ([]framework.Action, []conf.Tier, []
 	return actions, schedulerConf.Tiers, schedulerConf.Configurations, schedulerConf.MetricsConfiguration, nil
 }
 
+// 启动一个 uds，这个 http server 的作用是可以动态设置 klog 的 level
 func runSchedulerSocket() {
 	fs := flag.CommandLine
 	startKlogLevel := fs.Lookup("v").Value.String()
@@ -94,5 +95,6 @@ func runSchedulerSocket() {
 	if socketDir == "" {
 		socketDir = util.DefaultSocketDir
 	}
+	// 动态设置 klog 的 level
 	util.ListenAndServeKlogLogLevel("klog", startKlogLevel, socketDir)
 }

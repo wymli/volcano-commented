@@ -445,6 +445,7 @@ func (ni *NodeInfo) AddTask(task *TaskInfo) error {
 	}
 
 	// Update task node name upon successful task addition.
+	// 真 sb，明明是 node.AddTask, 却修改了 task，神经病
 	task.NodeName = ni.Name
 	ti.NodeName = ni.Name
 	ni.Tasks[key] = ti

@@ -60,6 +60,9 @@ func (alloc *Action) Execute(ssn *framework.Session) {
 	jobsMap := map[api.QueueID]*util.PriorityQueue{}
 
 	alloc.session = ssn
+	// 这个函数把 sess.jobs 里的所有 jobs 分发到对应的 queues/jobsmap 里
+	// 还是那句话，标准流程应该是 all jobs set -> queue ordered jobs with ordered queues -> all ordered jobs channel
+	// 这里不同的 action 都有这个步骤，但是不同的 action 实现的都不一样，足可见 这个 volcano project leader 的🌶︎🐔
 	alloc.pickUpQueuesAndJobs(queues, jobsMap)
 	klog.V(3).Infof("Try to allocate resource to %d Queues", len(jobsMap))
 	alloc.allocateResources(queues, jobsMap)
@@ -76,6 +79,7 @@ func (alloc *Action) pickUpQueuesAndJobs(queues *util.PriorityQueue, jobsMap map
 				continue
 			}
 		} else if job.IsPending() {
+			// 难以理解这里为什么要用 else if.  🌶︎🐔
 			klog.V(4).Infof("Job <%s/%s> Queue <%s> status update from pending to inqueue, reason: no enqueue action is configured.",
 				job.Namespace, job.Name, job.Queue)
 			job.PodGroup.Status.Phase = scheduling.PodGroupInqueue
@@ -128,6 +132,7 @@ func (alloc *Action) allocateResources(queues *util.PriorityQueue, jobsMap map[a
 
 		klog.V(3).Infof("Try to allocate resource to Jobs in Queue <%s>", queue.Name)
 
+		// 这里 jobs建议命名 queueJobs, 不然脱离这一行吗，就很难知道这个 jobs 到底是啥了
 		jobs, found := jobsMap[queue.UID]
 		if !found || jobs.Empty() {
 			klog.V(4).Infof("Can not find jobs for queue %s.", queue.Name)
@@ -140,6 +145,7 @@ func (alloc *Action) allocateResources(queues *util.PriorityQueue, jobsMap map[a
 			for _, task := range job.TaskStatusIndex[api.Pending] {
 				// Skip BestEffort task in 'allocate' action.
 				if task.Resreq.IsEmpty() {
+					// 这里会跳过 besteffort 的 pod 分配（即那些不申请资源的 pod）
 					klog.V(4).Infof("Task <%v/%v> is BestEffort task, skip it.",
 						task.Namespace, task.Name)
 					continue
@@ -168,6 +174,9 @@ func (alloc *Action) allocateResources(queues *util.PriorityQueue, jobsMap map[a
 func (alloc *Action) allocateResourcesForTasks(tasks *util.PriorityQueue, job *api.JobInfo, jobs *util.PriorityQueue, queue *api.QueueInfo, allNodes []*api.NodeInfo) {
 	ssn := alloc.session
 	stmt := framework.NewStatement(ssn)
+
+	// 很蠢，就一个函数的事情，比如util.PrioritizeNodes(task, nodes, ssn.BatchNodeOrderFn, ssn.NodeOrderMapFn, ssn.NodeOrderReduceFn) 就做的很好
+	// 这里没必要再搞个 class，如果要搞的话就都搞，要么都不搞
 	ph := util.NewPredicateHelper()
 
 	for !tasks.Empty() {
@@ -190,6 +199,12 @@ func (alloc *Action) allocateResourcesForTasks(tasks *util.PriorityQueue, job *a
 			break
 		}
 
+		// 从 allnodes 里筛选出符合 predicate(task, node) 的 nodes
+		//
+		// 这里PredicateFn太多了，给我绕晕了，alloc.predicate, alloc.session.predicate, predicateHelper.predicate 真 sb
+		// predicateHelper.predicate -> call alloc.predicate -> call alloc.session.predicate
+		// alloc.session.predicate 就是调用各个 plugin 自定义的predicate 函数
+		// 难以理解，这里有什么必要写个 helper 吗？
 		predicateNodes, fitErrors := ph.PredicateNodes(task, allNodes, alloc.predicate, true)
 		if len(predicateNodes) == 0 {
 			job.NodesFitErrors[task.UID] = fitErrors
@@ -202,8 +217,8 @@ func (alloc *Action) allocateResourcesForTasks(tasks *util.PriorityQueue, job *a
 		// Score the first gradient node first. If the first gradient node meets the requirements, ignore the second gradient node list,
 		// otherwise, score the second gradient node and select the appropriate node.
 		var candidateNodes [][]*api.NodeInfo
-		var idleCandidateNodes []*api.NodeInfo
-		var futureIdleCandidateNodes []*api.NodeInfo
+		var idleCandidateNodes []*api.NodeInfo       // 当前满足task资源要求的空闲节点
+		var futureIdleCandidateNodes []*api.NodeInfo // 一段时间后将要满足task资源要求的空闲节点（比如 pod 被标记删除，还未删除，正在 teminating 等）
 		for _, n := range predicateNodes {
 			if task.InitResreq.LessEqual(n.Idle, api.Zero) {
 				idleCandidateNodes = append(idleCandidateNodes, n)
@@ -226,10 +241,11 @@ func (alloc *Action) allocateResourcesForTasks(tasks *util.PriorityQueue, job *a
 			}
 			switch {
 			case len(nodes) == 0:
-				klog.V(5).Infof("Task: %v, no matching node is found in the candidateNodes（index: %d） list.", task.Name, index)
+				klog.V(5).Infof("Task: %v, no matching node is found in the candidateNodes（index: %d） list.", task.Name, index) // 这里日志用index就很不清晰了，需要一个 orderedMap
 			case len(nodes) == 1: // If only one node after predicate, just use it.
 				bestNode = nodes[0]
 			case len(nodes) > 1: // If more than one node after predicate, using "the best" one
+				// 这个 util 函数没有直接依赖 ssn，是有一定抽象的
 				nodeScores := util.PrioritizeNodes(task, nodes, ssn.BatchNodeOrderFn, ssn.NodeOrderMapFn, ssn.NodeOrderReduceFn)
 
 				bestNode = ssn.BestNodeFn(task, nodeScores)
@@ -274,14 +290,16 @@ func (alloc *Action) allocateResourcesForTasks(tasks *util.PriorityQueue, job *a
 		}
 
 		if ssn.JobReady(job) && !tasks.Empty() {
-			jobs.Push(job)
+			jobs.Push(job) // 这个job 因为 task 还没分配完全，重新入队。但问题是，这个函数都没有 jobs.Pop()的逻辑，两边直接割裂了，真蠢
 			break
 		}
 	}
 
+	// 这一段 if else ，看湿了
 	if ssn.JobReady(job) {
 		stmt.Commit()
 	} else {
+		// 这是在干啥？把这个 else 去掉会死？
 		if !ssn.JobPipelined(job) {
 			stmt.Discard()
 		}

@@ -48,6 +48,7 @@ func (gp *gangPlugin) Name() string {
 	return PluginName
 }
 
+// 在这个函数，plugin 会往 session里面注册各种hook函数
 func (gp *gangPlugin) OnSessionOpen(ssn *framework.Session) {
 	validJobFn := func(obj interface{}) *api.ValidateResult {
 		job, ok := obj.(*api.JobInfo)
@@ -80,6 +81,7 @@ func (gp *gangPlugin) OnSessionOpen(ssn *framework.Session) {
 
 	ssn.AddJobValidFn(gp.Name(), validJobFn)
 
+	// 这里是否可以抢占/回收，只简单考虑preemtee的 running task 数是否大于 minAvail
 	preemptableFn := func(preemptor *api.TaskInfo, preemptees []*api.TaskInfo) ([]*api.TaskInfo, int) {
 		var victims []*api.TaskInfo
 		jobOccupiedMap := map[api.JobID]int32{}
@@ -136,6 +138,7 @@ func (gp *gangPlugin) OnSessionOpen(ssn *framework.Session) {
 	ssn.AddJobOrderFn(gp.Name(), jobOrderFn)
 	ssn.AddJobReadyFn(gp.Name(), func(obj interface{}) bool {
 		ji := obj.(*api.JobInfo)
+		// 检测 task粒度和 job 粒度的，资源已分配的 pod 是否超过 minAvail
 		if ji.CheckTaskReady() && ji.Ready() {
 			return true
 		}

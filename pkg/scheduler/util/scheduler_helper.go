@@ -36,6 +36,7 @@ import (
 
 const baselinePercentageOfNodesToFind = 50
 
+// 牛逼，全局变量
 var lastProcessedNodeIndex int
 
 // CalculateNumOfFeasibleNodesToFind returns the number of feasible nodes that once found,
@@ -62,6 +63,7 @@ func CalculateNumOfFeasibleNodesToFind(numAllNodes int32) (numNodes int32) {
 }
 
 // PrioritizeNodes returns a map whose key is node's score and value are corresponding nodes
+// 拿到各个节点的分数，分数是batchScore + mapScore + reduceScore 的sum
 func PrioritizeNodes(task *api.TaskInfo, nodes []*api.NodeInfo, batchFn api.BatchNodeOrderFn, mapFn api.NodeOrderMapFn, reduceFn api.NodeOrderReduceFn) map[float64][]*api.NodeInfo {
 	pluginNodeScoreMap := map[string]k8sframework.NodeScoreList{}
 	nodeOrderScoreMap := map[string]float64{}
@@ -102,6 +104,8 @@ func PrioritizeNodes(task *api.TaskInfo, nodes []*api.NodeInfo, batchFn api.Batc
 		return nodeScores
 	}
 
+	// 这个命名，nodeScoreMap 和 nodeScores， 真牛，🌶︎🐔
+	// 明明是 node2score 和 score2nodes
 	nodeScoreMap := map[string]float64{}
 	for _, node := range nodes {
 		// If no plugin is applied to this node, the default is 0.0
@@ -143,6 +147,7 @@ func SortNodes(nodeScores map[float64][]*api.NodeInfo) []*api.NodeInfo {
 
 // SelectBestNode returns best node whose score is highest, pick one randomly if there are many nodes with same score.
 func SelectBestNode(nodeScores map[float64][]*api.NodeInfo) *api.NodeInfo {
+	// 这就是一个排序的事情，还专门搞个函数？🌶︎🐔，属于是防御性编程了，生怕别人看懂
 	var bestNodes []*api.NodeInfo
 	maxScore := -1.0
 	for score, nodes := range nodeScores {
@@ -171,6 +176,7 @@ func GetNodeList(nodes map[string]*api.NodeInfo, nodeList []string) []*api.NodeI
 }
 
 // ValidateVictims returns an error if the resources of the victims can't satisfy the preemptor
+// 节点剩余资源+被抢占资源 是否能大于 新任务资源
 func ValidateVictims(preemptor *api.TaskInfo, node *api.NodeInfo, victims []*api.TaskInfo) error {
 	// Victims should not be judged to be empty here.
 	// It is possible to complete the scheduling of the preemptor without evicting the task.

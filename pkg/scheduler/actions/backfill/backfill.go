@@ -61,6 +61,7 @@ func (backfill *Action) Execute(ssn *framework.Session) {
 
 	// TODO (k82cn): When backfill, it's also need to balance between Queues.
 	for _, job := range ssn.Jobs {
+		// 也就是 job.podgroup == pending
 		if job.IsPending() {
 			continue
 		}
@@ -72,7 +73,11 @@ func (backfill *Action) Execute(ssn *framework.Session) {
 
 		ph := util.NewPredicateHelper()
 
+		// 处理 running job 的那些没有资源要求的 pending task
+		// 在allocate 阶段，这些 pod 会被跳过
+		// 这里和 allocate 的区别是，backfill 只要通过 predicatefn 就行，不用比较task 和node 的资源
 		for _, task := range job.TaskStatusIndex[api.Pending] {
+			// 只对没有指明最小资源的 task 使用
 			if task.InitResreq.IsEmpty() {
 				allocated := false
 				fe := api.NewFitErrors()
@@ -92,6 +97,7 @@ func (backfill *Action) Execute(ssn *framework.Session) {
 					break
 				}
 
+				// 这里和 allocate 部分代码没有区别，很明显应该抽象出来一个 findBestNode 函数
 				node := predicateNodes[0]
 				if len(predicateNodes) > 1 {
 					nodeScores := util.PrioritizeNodes(task, predicateNodes, ssn.BatchNodeOrderFn, ssn.NodeOrderMapFn, ssn.NodeOrderReduceFn)

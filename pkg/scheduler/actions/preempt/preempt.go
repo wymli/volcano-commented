@@ -85,6 +85,7 @@ func (pmpt *Action) Execute(ssn *framework.Session) {
 	// Preemption between Jobs within Queue.
 	for _, queue := range queues {
 		for {
+			// 说人话：q2jobs
 			preemptors := preemptorsMap[queue.UID]
 
 			// If no preemptors, no preemption.
@@ -110,6 +111,7 @@ func (pmpt *Action) Execute(ssn *framework.Session) {
 					break
 				}
 
+				// 说人话：j2tasks
 				preemptor := preemptorTasks[preemptorJob.UID].Pop().(*api.TaskInfo)
 
 				if preempted, _ := preempt(ssn, stmt, preemptor, func(task *api.TaskInfo) bool {
@@ -190,6 +192,7 @@ func (pmpt *Action) Execute(ssn *framework.Session) {
 	}
 
 	// call victimTasksFn to evict tasks
+	// 选择被抢占的受害者 task
 	victimTasks(ssn)
 }
 
@@ -315,9 +318,11 @@ func preempt(
 	return assigned, nil
 }
 
+// 选择被抢占的受害者 task
 func victimTasks(ssn *framework.Session) {
 	stmt := framework.NewStatement(ssn)
 	tasks := make([]*api.TaskInfo, 0)
+	// 不是很清楚这是在干啥，这里 tasks 是空的，不知道在选啥
 	victimTasksMap := ssn.VictimTasks(tasks)
 	for victim := range victimTasksMap {
 		if err := stmt.Evict(victim.Clone(), "evict"); err != nil {

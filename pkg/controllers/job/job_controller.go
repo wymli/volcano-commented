@@ -107,7 +107,7 @@ type jobcontroller struct {
 	queueSynced func() bool
 
 	// queue that need to sync up
-	queueList    []workqueue.RateLimitingInterface
+	queueList    []workqueue.RateLimitingInterface // 事件队列,informer 那里注册的事件处理函数会生成对应的事件，往这个 queue 丢
 	commandQueue workqueue.RateLimitingInterface
 	cache        jobcache.Cache
 	// Job Event recorder
@@ -307,6 +307,7 @@ func (cc *jobcontroller) getWorkerQueue(key string) workqueue.RateLimitingInterf
 	return queue
 }
 
+// 消费事件队列里的事件，将事件转成 action，然后交给状态机执行
 func (cc *jobcontroller) processNextReq(count uint32) bool {
 	queue := cc.queueList[count]
 	obj, shutdown := queue.Get()
@@ -351,6 +352,10 @@ func (cc *jobcontroller) processNextReq(count uint32) bool {
 			"Start to execute action %s ", action))
 	}
 
+	// 每个 state 都是一个状态类，实现了对应的事件处理函数。这里的事件是具体的动作 action，不是 event，但本质上差不多，只不过是中间wrap了一层，而中间的这一层，就是交给用户自定义的 event->action 的映射
+	// 用户关心发生了什么事件，要执行什么样的操作
+	// 状态机关心收到了什么操作，要切换成什么状态，以及执行状态切换时的一些操作
+	// Event 和 Action 其实不太好分清，到底哪个是 Event，哪个是 Action, 我们后面看看。
 	if err := st.Execute(action); err != nil {
 		if cc.maxRequeueNum == -1 || queue.NumRequeues(req) < cc.maxRequeueNum {
 			klog.V(2).Infof("Failed to handle Job <%s/%s>: %v",

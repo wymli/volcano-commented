@@ -185,6 +185,7 @@ func (ssn *Session) Reclaimable(reclaimer *api.TaskInfo, reclaimees []*api.TaskI
 				victims = intersection
 			}
 		}
+		// 拿到这一层所有决策结果的交集
 		// Plugins in this tier made decision if victims is not nil
 		if victims != nil {
 			return victims
@@ -247,6 +248,7 @@ func (ssn *Session) Preemptable(preemptor *api.TaskInfo, preemptees []*api.TaskI
 }
 
 // Overused invoke overused function of the plugins
+// 真🐂🍺，这个函数都直接 copy, 也不抽象一个 base function，🌶︎🐔
 func (ssn *Session) Overused(queue *api.QueueInfo) bool {
 	for _, tier := range ssn.Tiers {
 		for _, plugin := range tier.Plugins {
@@ -391,19 +393,21 @@ func (ssn *Session) JobEnqueueable(obj interface{}) bool {
 	for _, tier := range ssn.Tiers {
 		for _, plugin := range tier.Plugins {
 			if !isEnabled(plugin.EnabledJobEnqueued) {
-				continue
+				continue // 弃权
 			}
 			fn, found := ssn.jobEnqueueableFns[plugin.Name]
 			if !found {
-				continue
+				continue // 弃权
 			}
 
 			res := fn(obj)
+			// res == 0 弃权
 			if res < 0 {
 				return false
 			}
 			if res > 0 {
-				hasFound = true
+				// 这个命名纯 sb，hasFound，你 found 啥？
+				hasFound = true // 不能直接返回，因为有可能这一层的其他 plugin 投反对票，只有其他 plugin 弃权或者赞成才行
 			}
 		}
 		// if plugin exists that votes permit, meanwhile other plugin votes abstention,
@@ -452,6 +456,7 @@ func (ssn *Session) TargetJob(jobs []*api.JobInfo) *api.JobInfo {
 
 // VictimTasks returns the victims selected
 func (ssn *Session) VictimTasks(tasks []*api.TaskInfo) map[*api.TaskInfo]bool {
+	// 一个简单的去重而已，搞个 set 结构不行吗？
 	// different filters may add the same task to victims, so use a map to remove duplicate tasks.
 	victimSet := make(map[*api.TaskInfo]bool)
 	for _, tier := range ssn.Tiers {

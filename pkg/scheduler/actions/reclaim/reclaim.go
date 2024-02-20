@@ -36,6 +36,8 @@ func (ra *Action) Name() string {
 
 func (ra *Action) Initialize() {}
 
+// 回收：当 queue 使用的资源超过软约束后，回收资源;
+// 即如果资源不够时（存在 pending 的任务时），回收其他队列的pod
 func (ra *Action) Execute(ssn *framework.Session) {
 	klog.V(5).Infof("Enter Reclaim ...")
 	defer klog.V(5).Infof("Leaving Reclaim ...")
@@ -43,13 +45,16 @@ func (ra *Action) Execute(ssn *framework.Session) {
 	queues := util.NewPriorityQueue(ssn.QueueOrderFn)
 	queueMap := map[api.QueueID]*api.QueueInfo{}
 
+	// q2jobs
 	preemptorsMap := map[api.QueueID]*util.PriorityQueue{}
+	// j2tasks
 	preemptorTasks := map[api.JobID]*util.PriorityQueue{}
 
 	klog.V(3).Infof("There are <%d> Jobs and <%d> Queues in total for scheduling.",
 		len(ssn.Jobs), len(ssn.Queues))
 
 	for _, job := range ssn.Jobs {
+		// 只处理 running后 的任务
 		if job.IsPending() {
 			continue
 		}
@@ -59,6 +64,7 @@ func (ra *Action) Execute(ssn *framework.Session) {
 			continue
 		}
 
+		// 这里就是拿到这些 job 的 queues，其实就是一行 getRelatedQueues(jobs) 的事情
 		if queue, found := ssn.Queues[job.Queue]; !found {
 			klog.Errorf("Failed to find Queue <%s> for Job <%s/%s>",
 				job.Queue, job.Namespace, job.Name)
@@ -70,10 +76,12 @@ func (ra *Action) Execute(ssn *framework.Session) {
 		}
 
 		if job.HasPendingTasks() {
+			// q2jobs
 			if _, found := preemptorsMap[job.Queue]; !found {
 				preemptorsMap[job.Queue] = util.NewPriorityQueue(ssn.JobOrderFn)
 			}
 			preemptorsMap[job.Queue].Push(job)
+			// j2tasks
 			preemptorTasks[job.UID] = util.NewPriorityQueue(ssn.TaskOrderFn)
 			for _, task := range job.TaskStatusIndex[api.Pending] {
 				preemptorTasks[job.UID].Push(task)
@@ -97,7 +105,7 @@ func (ra *Action) Execute(ssn *framework.Session) {
 		}
 
 		// Found "high" priority job
-		jobs, found := preemptorsMap[queue.UID]
+		jobs, found := preemptorsMap[queue.UID] // q2jobs
 		if !found || jobs.Empty() {
 			continue
 		} else {
@@ -111,6 +119,8 @@ func (ra *Action) Execute(ssn *framework.Session) {
 			task = tasks.Pop().(*api.TaskInfo)
 		}
 
+		// task 是当前最高优先queue里的最高优先job 里的最高优先 task
+
 		if !ssn.Allocatable(queue, task) {
 			klog.V(3).Infof("Queue <%s> is overused when considering task <%s>, ignore it.", queue.Name, task.Name)
 			continue
@@ -123,6 +133,7 @@ func (ra *Action) Execute(ssn *framework.Session) {
 
 		assigned := false
 		for _, n := range ssn.Nodes {
+			// statusSets 是所有 tier、所有 plugin 的 predicateStatus
 			var statusSets util.StatusSets
 			statusSets, err := ssn.PredicateFn(task, n)
 			if err != nil {
@@ -140,7 +151,9 @@ func (ra *Action) Execute(ssn *framework.Session) {
 			klog.V(3).Infof("Considering Task <%s/%s> on Node <%s>.",
 				task.Namespace, task.Name, n.Name)
 
+			// reclaimees： 回收候选集
 			var reclaimees []*api.TaskInfo
+			// 遍历该节点托管的所有running任务，看这 running 任务
 			for _, task := range n.Tasks {
 				// Ignore non running task.
 				if task.Status != api.Running {
@@ -153,6 +166,9 @@ func (ra *Action) Execute(ssn *framework.Session) {
 				if j, found := ssn.Jobs[task.Job]; !found {
 					continue
 				} else if j.Queue != job.Queue {
+					// 这里不在同一个队列，如果队列可以回收，就加到回收候选集里
+					// 这里的Reclaimable只是判断了一个 flag: Reclaimable
+					// 不用考虑队列 quota 和优先级吗？
 					q := ssn.Queues[j.Queue]
 					if !q.Reclaimable() {
 						continue
@@ -167,8 +183,11 @@ func (ra *Action) Execute(ssn *framework.Session) {
 				continue
 			}
 
+			// 对reclaimees，取plugins 认可的交集
+			// plugin一般可能是判断对应job少掉一个 pod 后，是不是还是大于 minAvail
 			victims := ssn.Reclaimable(task, reclaimees)
 
+			// 这里看抢了之后的资源能不能容纳新 task，如果不够，就不抢了
 			if err := util.ValidateVictims(task, n, victims); err != nil {
 				klog.V(3).Infof("No validated victims on Node <%s>: %v", n.Name, err)
 				continue
@@ -188,6 +207,8 @@ func (ra *Action) Execute(ssn *framework.Session) {
 				}
 				reclaimed.Add(reclaimee.Resreq)
 				// If reclaimed enough resources, break loop to avoid Sub panic.
+				// 回收了足够资源了，就不继续回收了
+				// 但是这里判断是否回收够资源的算法有点奇怪，为啥是回收资源>大于申请资源，但之前ValidateVictims的时候是加上了节点剩余资源的
 				if resreq.LessEqual(reclaimed, api.Zero) {
 					break
 				}
@@ -209,6 +230,8 @@ func (ra *Action) Execute(ssn *framework.Session) {
 			}
 		}
 
+		// 如果分配成功，就继续分配这个job的其他较低优先级的task
+		// 否则就分配其他任务（因为这个 job 分配不了，必须先分配高优task）
 		if assigned {
 			jobs.Push(job)
 		}

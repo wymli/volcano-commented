@@ -38,8 +38,9 @@ func MakePodName(jobName string, taskName string, index int) string {
 	return fmt.Sprintf(jobhelpers.PodNameFmt, jobName, taskName, index)
 }
 
+// 构建pod 对象，但是没有调用 kubeclient
 func createJobPod(job *batch.Job, template *v1.PodTemplateSpec, topologyPolicy batch.NumaPolicy, ix int, jobForwarding bool) *v1.Pod {
-	templateCopy := template.DeepCopy()
+	templateCopy := template.DeepCopy() // 这里重复 deepcopy了一次，外面已经 deepcopy了
 
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -59,6 +60,7 @@ func createJobPod(job *batch.Job, template *v1.PodTemplateSpec, topologyPolicy b
 		pod.Spec.SchedulerName = job.Spec.SchedulerName
 	}
 
+	// 这里 volumeMap 只是一个去重的作用，很蠢
 	volumeMap := make(map[string]string)
 	for _, volume := range job.Spec.Volumes {
 		vcName := volume.VolumeClaimName
@@ -84,7 +86,7 @@ func createJobPod(job *batch.Job, template *v1.PodTemplateSpec, topologyPolicy b
 				MountPath: volume.MountPath,
 				Name:      name,
 			}
-			pod.Spec.Containers[i].VolumeMounts = append(c.VolumeMounts, vm)
+			pod.Spec.Containers[i].VolumeMounts = append(c.VolumeMounts, vm) // 这写法恶心到我了
 		}
 	}
 
@@ -156,7 +158,27 @@ func createJobPod(job *batch.Job, template *v1.PodTemplateSpec, topologyPolicy b
 	return pod
 }
 
+// 根据 req中的event或者exitcode 查表（即查找job spec中注册的 policies 策略（task 中的策略优先））对应的 action
+//
+// 这里代码写的很差，实际做的事情就是一种优先级匹配的策略，先找啥再找啥，应该通过循环解决，找到就退出
+// 形如：
+//
+//	getAction := func([]batch.LifecyclePolicy, *apis.Request) *v1alpha1.Action {
+//		// dosomething
+//	}
+//
+// taskPolicies := [task for task in job.Spec.Tasks if task.Name == req.TaskName]
+// jobPolicies := job.Spec.Policies
+// availablePolicies := taskPolicies + jobPolicies
+//
+//	for _, policy range  availablePolicies{
+//		if action := getAction(policy);action != nil{
+//			return action
+//		}
+//	}
 func applyPolicies(job *batch.Job, req *apis.Request) v1alpha1.Action {
+	// 如果指定了action，就直接用，不用再从 event 推导 action
+	// 从函数的语义上来说，这个 action 的判断放在外面更好
 	if len(req.Action) != 0 {
 		return req.Action
 	}
@@ -171,6 +193,7 @@ func applyPolicies(job *batch.Job, req *apis.Request) v1alpha1.Action {
 		return v1alpha1.SyncJobAction
 	}
 
+	// 查找 task 中的 policy
 	// Overwrite Job level policies
 	if len(req.TaskName) != 0 {
 		// Parse task level policies
@@ -195,6 +218,7 @@ func applyPolicies(job *batch.Job, req *apis.Request) v1alpha1.Action {
 		}
 	}
 
+	// 查找 job 中的 policy
 	// Parse Job level policies
 	for _, policy := range job.Spec.Policies {
 		policyEvents := getEventlist(policy)
@@ -215,9 +239,9 @@ func applyPolicies(job *batch.Job, req *apis.Request) v1alpha1.Action {
 }
 
 func getEventlist(policy batch.LifecyclePolicy) []v1alpha1.Event {
-	policyEventsList := policy.Events
+	policyEventsList := policy.Events // events
 	if len(policy.Event) > 0 {
-		policyEventsList = append(policyEventsList, policy.Event)
+		policyEventsList = append(policyEventsList, policy.Event) // event
 	}
 	return policyEventsList
 }

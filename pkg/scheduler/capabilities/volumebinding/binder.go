@@ -564,9 +564,12 @@ func (b *volumeBinder) bindAPIUpdate(ctx context.Context, pod *v1.Pod, bindings 
 		return fmt.Errorf("failed to get cached claims to provision for pod %q", podName)
 	}
 
+	// lastProcessedBinding 就是 静态pc/pvc绑定
 	lastProcessedBinding := 0
+	// lastProcessedProvisioning 就是 动态绑定，根据 pvc 自动创建 pv 绑定
 	lastProcessedProvisioning := 0
 	defer func() {
+		// 这里一般的回滚写法就是 if err!=nil 完事，不过这里是按情况回滚
 		// only revert assumed cached updates for volumes we haven't successfully bound
 		if lastProcessedBinding < len(bindings) {
 			b.revertAssumedPVs(bindings[lastProcessedBinding:])
@@ -587,6 +590,8 @@ func (b *volumeBinder) bindAPIUpdate(ctx context.Context, pod *v1.Pod, bindings 
 	// There is no API rollback if the actual binding fails
 	for _, binding = range bindings {
 		// TODO: does it hurt if we make an api call and nothing needs to be updated?
+		// 这里看着是要拿最新的 pv
+		// 既然担心 Update，为啥不用 Get?
 		klog.V(5).InfoS("Updating PersistentVolume: binding to claim", "pod", klog.KObj(pod), "PV", klog.KObj(binding.pv), "PVC", klog.KObj(binding.pvc))
 		newPV, err := b.kubeClient.CoreV1().PersistentVolumes().Update(ctx, binding.pv, metav1.UpdateOptions{})
 		if err != nil {
@@ -665,11 +670,13 @@ func (b *volumeBinder) checkBindings(pod *v1.Pod, bindings []*BindingInfo, claim
 	}
 
 	for _, binding := range bindings {
+		// GetAPIObj 指的是从 informer/lister 那里拿到 obj
 		pv, err := b.pvCache.GetAPIPV(binding.pv.Name)
 		if err != nil {
 			return false, fmt.Errorf("failed to check binding: %w", err)
 		}
 
+		// 很奇怪，为啥有时候加 namespace，有时候不加
 		pvc, err := b.pvcCache.GetAPIPVC(getPVCName(binding.pvc))
 		if err != nil {
 			return false, fmt.Errorf("failed to check binding: %w", err)
@@ -677,6 +684,7 @@ func (b *volumeBinder) checkBindings(pod *v1.Pod, bindings []*BindingInfo, claim
 
 		// Because we updated PV in apiserver, skip if API object is older
 		// and wait for new API object propagated from apiserver.
+		// 从 pvCache 拿到的 pv 应该是最新的（不应该小于 binding.pv,） 否则得等等
 		if versioner.CompareResourceVersion(binding.pv, pv) > 0 {
 			return false, nil
 		}

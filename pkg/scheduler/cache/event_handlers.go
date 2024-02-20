@@ -224,6 +224,7 @@ func (sc *SchedulerCache) addTask(pi *schedulingapi.TaskInfo) error {
 		}
 	}
 
+	// 这里是从池子里取 job（并且会把新创建的 job 放到池子里）
 	job := sc.getOrCreateJob(pi)
 	if job != nil {
 		job.AddTaskInfo(pi)
@@ -243,7 +244,12 @@ func (sc *SchedulerCache) NewTaskInfo(pod *v1.Pod) (*schedulingapi.TaskInfo, err
 }
 
 // Assumes that lock is already acquired.
+// 这个 assume，牛逼，把枪交给别人指在自己头上
+// 看起来作者的思路是AddPod作为 view 层函数加锁，addPod 就作为一个内部可复用函数
+// 这带来的问题就是锁的粒度很粗
+// 这里addPod和 addTask函数挂在一起，很难分清这两个，其实是 informer -> addPod -> addTask (在作者常见的处理里，一般是informer -> addPod -> queue -> addTask)
 func (sc *SchedulerCache) addPod(pod *v1.Pod) error {
+	// 明明是taskInfo，不是 podInfo，却命名为 pi，说明连其他的commiter 都分不清 task/pod，真不知道这概念到底谁起的，真 sb
 	pi, err := sc.NewTaskInfo(pod)
 	if err != nil {
 		klog.Errorf("generate taskInfo for pod(%s) failed: %v", pod.Name, err)
@@ -279,6 +285,8 @@ func (sc *SchedulerCache) syncTask(oldTask *schedulingapi.TaskInfo) error {
 	return sc.updateTask(oldTask, newTask)
 }
 
+// 到底是什么脑回路，要把 delete+add 解释为 update，这里不如说 refresh，这里 delete/add 要做一些关联外键的设置，比如删掉关联 job 里的 task 引用等
+// 正常人都会觉得 update 是在原地更新某些字段
 func (sc *SchedulerCache) updateTask(oldTask, newTask *schedulingapi.TaskInfo) error {
 	if err := sc.deleteTask(oldTask); err != nil {
 		klog.Warningf("Failed to delete task: %v", err)
@@ -318,6 +326,7 @@ func (sc *SchedulerCache) updatePod(oldPod, newPod *v1.Pod) error {
 	return sc.addPod(newPod)
 }
 
+// 把 task 从关联的 job/node 上删除掉，这里 task 就是一个 pod
 func (sc *SchedulerCache) deleteTask(pi *schedulingapi.TaskInfo) error {
 	var jobErr, nodeErr, numaErr error
 
@@ -486,17 +495,24 @@ func (sc *SchedulerCache) removeNodeImageStates(node string) {
 
 // AddOrUpdateNode adds or updates node info in cache.
 func (sc *SchedulerCache) AddOrUpdateNode(node *v1.Node) error {
+	// 锁住整个 cache ，纯 sb，这个lili_9309@163.com 是真菜逼。
+	// 不过这种 map+mutex，在没有泛型的时候，确实不好抽象出一个结构，只能说当时 go 是垃圾
 	sc.Mutex.Lock()
 	defer sc.Mutex.Unlock()
 
 	if sc.Nodes[node.Name] != nil {
 		sc.Nodes[node.Name].SetNode(node)
+		// 这里remove了，下面又去 add，纯  sb, add 改成 set 会死吗？
 		sc.removeNodeImageStates(node.Name)
 	} else {
 		sc.Nodes[node.Name] = schedulingapi.NewNodeInfo(node)
 	}
 	sc.addNodeImageStates(node, sc.Nodes[node.Name])
 
+	// 这么一大段逻辑，就为了实现一个 appendIfNotExist(), 多少是有点大病
+	// 换个高级点的数据结构会死吗，就是一个OrderedSet
+	// 再不然，直接sc.NodeList = Keys(sc.Nodes) 就完事了。
+	// 这里 NodeList, Nodes这两个冗余结构直接平铺在主结构里，很 sb，是个人都会怀疑他们是不是有什么 hack 逻辑，但实际上，就是一个简单的 Keys(), 恶心死了
 	var nodeExisted bool
 	for _, name := range sc.NodeList {
 		if name == node.Name {
@@ -602,6 +618,17 @@ func (sc *SchedulerCache) SyncNode(nodeName string) error {
 	}
 
 	csiNode, err := sc.csiNodeInformer.Lister().Get(nodeName)
+
+	// 正常人会写成：
+	// if err != nil {
+	// 	if errors.IsNotFound(err) { // 或者直接 !errors.IsNotFound(err), 但是取反就会反逻辑
+	// 		// donothing
+	// 	} else {
+	// 		return err
+	// 	}
+	// }
+	// sc.setCSIResourceOnNode(csiNode, node)
+	// return sc.AddOrUpdateNode(node)
 	if err == nil {
 		sc.setCSIResourceOnNode(csiNode, node)
 	} else if !errors.IsNotFound(err) {
@@ -675,6 +702,7 @@ func getJobID(pg *schedulingapi.PodGroup) schedulingapi.JobID {
 
 // Assumes that lock is already acquired.
 func (sc *SchedulerCache) setPodGroup(ss *schedulingapi.PodGroup) error {
+	// 这个变量叫 ss，真牛逼
 	job := getJobID(ss)
 	if _, found := sc.Jobs[job]; !found {
 		sc.Jobs[job] = schedulingapi.NewJobInfo(job)
@@ -683,6 +711,7 @@ func (sc *SchedulerCache) setPodGroup(ss *schedulingapi.PodGroup) error {
 	sc.Jobs[job].SetPodGroup(ss)
 
 	// TODO(k82cn): set default queue in admission.
+	// +1， 默认值统一在一层赋予，后面如果空参数，直接报错
 	if len(ss.Spec.Queue) == 0 {
 		sc.Jobs[job].Queue = schedulingapi.QueueID(sc.defaultQueue)
 	}
@@ -721,11 +750,13 @@ func (sc *SchedulerCache) AddPodGroupV1beta1(obj interface{}) {
 	}
 
 	podgroup := scheduling.PodGroup{}
+	// 这个 convert 有点没看懂，为啥不是直接用 schedulingv1beta1？
 	if err := scheme.Scheme.Convert(ss, &podgroup, nil); err != nil {
 		klog.Errorf("Failed to convert podgroup from %T to %T", ss, podgroup)
 		return
 	}
 
+	// k8s层的 api 结构转成程序内部的 api 结构，倒也合理。不过这里与其说是 api，不如说是 model（或者说是 ddd 里的 entity，我觉得更贴切，典型特征就是带 uid）
 	pg := &schedulingapi.PodGroup{PodGroup: podgroup, Version: schedulingapi.PodGroupVersionV1Beta1}
 	klog.V(4).Infof("Add PodGroup(%s) into cache, spec(%#v)", ss.Name, ss.Spec)
 

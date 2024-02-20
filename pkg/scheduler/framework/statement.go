@@ -28,6 +28,7 @@ import (
 // Operation type
 type Operation int8
 
+// 用 iota 做枚举，纯 sb
 const (
 	// Evict op
 	Evict = iota
@@ -142,6 +143,7 @@ func (s *Statement) unevict(reclaimee *api.TaskInfo) error {
 }
 
 // Pipeline the task for the node
+// 比较怀疑增加这个 pipeline 状态的必要性，当前没资源，等不就好了，还搞个中间状态干啥
 func (s *Statement) Pipeline(task *api.TaskInfo, hostname string) error {
 	job, found := s.ssn.Jobs[task.Job]
 	if found {
@@ -224,6 +226,7 @@ func (s *Statement) unpipeline(task *api.TaskInfo) error {
 
 // Allocate the task to node
 func (s *Statement) Allocate(task *api.TaskInfo, nodeInfo *api.NodeInfo) (err error) {
+	// 这个是干啥，逻辑比较复杂，后面再看
 	podVolumes, err := s.ssn.cache.GetPodVolumes(task, nodeInfo.Node)
 	if err != nil {
 		return err
@@ -251,6 +254,8 @@ func (s *Statement) Allocate(task *api.TaskInfo, nodeInfo *api.NodeInfo) (err er
 			return err
 		}
 	} else {
+		// 这是一个 badcase， 错误日志和 err，往往msg 是重复的，如何优雅的处理？
+		// 我的做法一般是只返回 error，在上层打日志
 		klog.Errorf("Failed to find Job <%s> in Session <%s> index when allocating.",
 			task.Job, s.ssn.UID)
 		return fmt.Errorf("failed to find job %s", task.Job)

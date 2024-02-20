@@ -68,6 +68,7 @@ func (ps *runningState) Execute(action v1alpha1.Action) error {
 			totalTaskMinAvailable := TotalTaskMinAvailable(ps.job.Job)
 			if status.Succeeded+status.Failed == jobReplicas {
 				if ps.job.Job.Spec.MinAvailable >= totalTaskMinAvailable {
+					// task内设置的MinAvailable优先
 					for _, task := range ps.job.Job.Spec.Tasks {
 						if task.MinAvailable == nil {
 							continue

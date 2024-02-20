@@ -25,4 +25,6 @@ const (
 
 	// TaskIndex is used as key in container env
 	TaskIndex = "VC_TASK_INDEX"
+
+	TaskName = "VC_TASK_NAME"
 )

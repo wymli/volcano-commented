@@ -72,6 +72,7 @@ func (sp *servicePlugin) addFlags() {
 }
 
 func (sp *servicePlugin) OnPodCreate(pod *v1.Pod, job *batch.Job) error {
+	// 牛👇
 	// Add `hostname` and `subdomain` for pod, mount service config for pod.
 	// A pod with `hostname` and `subdomain` will have the fully qualified domain name(FQDN)
 	// `hostname.subdomain.namespace.svc.cluster-domain.example`.
@@ -100,6 +101,8 @@ func (sp *servicePlugin) OnPodCreate(pod *v1.Pod, job *batch.Job) error {
 		envNames = append(envNames, fmt.Sprintf(EnvHostNumFmt, strings.ToUpper(formateENVKey)))
 	}
 
+	// VC_%s_HOSTS
+	// VC_%s_NUM
 	for _, name := range envNames {
 		hostEnv = append(hostEnv, v1.EnvVar{
 			Name: name,
@@ -125,17 +128,22 @@ func (sp *servicePlugin) OnPodCreate(pod *v1.Pod, job *batch.Job) error {
 }
 
 func (sp *servicePlugin) OnJobAdd(job *batch.Job) error {
+	// 已经创建，skip
 	if job.Status.ControlledResources["plugin-"+sp.Name()] == sp.Name() {
 		return nil
 	}
 
+	// role2hosts
 	hostFile := GenerateHosts(job)
 
 	// Create ConfigMap of hosts for Pods to mount.
+	// 创建 configMap
 	if err := helpers.CreateOrUpdateConfigMap(job, sp.Clientset.KubeClients, hostFile, sp.cmName(job)); err != nil {
 		return err
 	}
 
+	// 创建 headless service
+	// 但是似乎和configMap里的数据没有配合？-> 看OnPodCreate函数的注释
 	if err := sp.createServiceIfNotExist(job); err != nil {
 		return err
 	}

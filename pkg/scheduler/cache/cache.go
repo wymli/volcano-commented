@@ -732,16 +732,21 @@ func (sc *SchedulerCache) Run(stopCh <-chan struct{}) {
 	sc.informerFactory.Start(stopCh)
 	sc.vcInformerFactory.Start(stopCh)
 	sc.WaitForCacheSync(stopCh)
+	// 这里有的用多个协程处理，有的又不用，结构很不统一，并不是很好看
+
+	// sync node
 	for i := 0; i < int(sc.nodeWorkers); i++ {
 		go wait.Until(sc.runNodeWorker, 0, stopCh)
 	}
 
 	// Re-sync error tasks.
+	// 这里只处理发生 error 的 task
 	go wait.Until(sc.processResyncTask, 0, stopCh)
 
 	// Cleanup jobs.
 	go wait.Until(sc.processCleanupJob, 0, stopCh)
 
+	// 处理pod/pv绑定
 	go wait.Until(sc.processBindTask, time.Millisecond*20, stopCh)
 
 	// Get metrics data
@@ -1007,14 +1012,19 @@ func (sc *SchedulerCache) processResyncTask() {
 		return
 	}
 
+	// 这里reSynced flag 的作用就是不要重复入队，但这个不应该在 producer 这里保证，要么是数据结构自己保证去重，要么是 consumer 端去重
+	// 这个逻辑放在这里，又丑又脏
 	reSynced := false
 	if err := sc.syncTask(task); err != nil {
 		klog.Errorf("Failed to sync pod <%v/%v>, retry it.", task.Namespace, task.Name)
+		// 这里 resync， 就是重新入队，sc.errTasks.AddRateLimited(task)
+		// 真的nb，既然 get/done 都是直接操作sc.errTasks，为什么 requeue 不是？
 		sc.resyncTask(task)
 		reSynced = true
 	}
 
 	// execute custom bind err handler call back func if exists.
+	// 这里没看到 CustomBindErrHandler 有被赋值，估计这段逻辑没用
 	if task.CustomBindErrHandler != nil && !task.CustomBindErrHandlerSucceeded {
 		err := task.CustomBindErrHandler()
 		if err != nil {
@@ -1048,6 +1058,7 @@ func (sc *SchedulerCache) processSyncNode() bool {
 
 	klog.V(5).Infof("started sync node %s", nodeName)
 	err := sc.SyncNode(nodeName)
+	// 纯 sb，处理逻辑放在分支里，主流程去处理异常，牛逼
 	if err == nil {
 		sc.nodeQueue.Forget(nodeName)
 		return true
@@ -1111,6 +1122,7 @@ func (sc *SchedulerCache) processBindTask() {
 				return
 			}
 
+			// 这和全局变量有啥区别吗，真牛逼
 			sc.bindCache = append(sc.bindCache, taskInfo)
 			if len(sc.bindCache) == sc.batchNum {
 				sc.BindTask()
@@ -1118,6 +1130,7 @@ func (sc *SchedulerCache) processBindTask() {
 		default:
 		}
 
+		// 这里都都不到channel，必为0，不知道在这里判断啥？
 		if len(sc.BindFlowChannel) == 0 {
 			break
 		}
@@ -1133,6 +1146,8 @@ func (sc *SchedulerCache) processBindTask() {
 func (sc *SchedulerCache) BindTask() {
 	klog.V(5).Infof("batch bind task count %d", len(sc.bindCache))
 	var tmpBindCache []*schedulingapi.TaskInfo = make([]*schedulingapi.TaskInfo, len(sc.bindCache))
+	// 牛逼，这里又重新 copy 了一次，如果这样，为什么不直接 BindTask(taskInfos)
+	// 在设计函数时，尽可能把依赖放在函数参数，而不是类里面，类里面放些基本的 client 就行了
 	copy(tmpBindCache, sc.bindCache)
 	go func(tasks []*schedulingapi.TaskInfo) {
 		successfulTasks := make([]*schedulingapi.TaskInfo, 0)
@@ -1197,8 +1212,10 @@ func (sc *SchedulerCache) Snapshot() *schedulingapi.ClusterInfo {
 	var cloneJobLock sync.Mutex
 	var wg sync.WaitGroup
 
+	// 看不懂为啥要专门搞个协程，value.Clone() 慢？
 	cloneJob := func(value *schedulingapi.JobInfo) {
 		defer wg.Done()
+		// 这里是设置job的优先级
 		if value.PodGroup != nil {
 			value.Priority = sc.defaultPriority
 

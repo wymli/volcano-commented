@@ -43,11 +43,13 @@ import (
 
 var calMutex sync.Mutex
 
+// killJob： 删除对应的 pod and podgroup
 func (cc *jobcontroller) killJob(jobInfo *apis.JobInfo, podRetainPhase state.PhaseMap, updateStatus state.UpdateStatusFn) error {
 	job := jobInfo.Job
 	klog.V(3).Infof("Killing Job <%s/%s>, current version %d", job.Namespace, job.Name, job.Status.Version)
 	defer klog.V(3).Infof("Finished Job <%s/%s> killing, current version %d", job.Namespace, job.Name, job.Status.Version)
 
+	// DeletionTimestamp： 这是 k8s 的延迟删除策略
 	if job.DeletionTimestamp != nil {
 		klog.Infof("Job <%s/%s> is terminating, skip management process.",
 			job.Namespace, job.Name)
@@ -70,6 +72,7 @@ func (cc *jobcontroller) killJob(jobInfo *apis.JobInfo, podRetainPhase state.Pha
 				continue
 			}
 
+			// 判断是否是最后一次重试（代码写的比较垃）这里应该把这个逻辑抽成函数 func IsLastRetry(RetryCount，MaxRetry)  , 否则代码太散，徒增理解成本
 			maxRetry := job.Spec.MaxRetry
 			lastRetry := false
 			if job.Status.RetryCount >= maxRetry-1 {
@@ -78,6 +81,7 @@ func (cc *jobcontroller) killJob(jobInfo *apis.JobInfo, podRetainPhase state.Pha
 
 			// Only retain the Failed and Succeeded pods at the last retry.
 			// If it is not the last retry, kill pod as defined in `podRetainPhase`.
+			// 这里最后一次 retry，保留完成的 pod（succeed/failed），job 状态也会被置为 failed（在 restartingState.UpdateStatus 里）
 			retainPhase := podRetainPhase
 			if lastRetry {
 				retainPhase = state.PodRetainPhaseSoft
@@ -85,17 +89,27 @@ func (cc *jobcontroller) killJob(jobInfo *apis.JobInfo, podRetainPhase state.Pha
 			_, retain := retainPhase[pod.Status.Phase]
 
 			if !retain {
+				// 调用 kubeclient 删除 pod
 				err := cc.deleteJobPod(job.Name, pod)
 				if err == nil {
 					terminating++
+					// 这种长逻辑，用 return 比用 continue 好，最好单独写个函数
 					continue
 				}
 				// record the err, and then collect the pod info like retained pod
 				errs = append(errs, err)
+				// 加入错误处理队列，稍后重新处理。这是一个异步操作，这里只是加入了队列，这个函数名容易误导为立即resync
 				cc.resyncTask(pod)
 			}
 
+			// 计算该 pod 对应 job 对应的 各个pod状态的 num。
+			// 这个函数名又长又不明确，真拉。要么直接 addPodStatusNum 完事了，add才是重要的，classify就是一个没啥意义的单词，重要的是 classify 之后做了什么
+			// 这里各个状态的num变量也太多了，我会写成:
+			// podStatusStat := PodStatusStat{pending: 0, running: 0, ...}
+			// podStatusStat.Add(pod.status.state.phase)
 			classifyAndAddUpPodBaseOnPhase(pod, &pending, &running, &succeeded, &failed, &unknown)
+			// 每个pod 的 annotation 上会挂一个 volcano.sh/task-spec, 这里就是计算该 pod 对应 task 对应的 各个pod状态的 num。
+			// again：函数名太傻逼了
 			calcPodStatus(pod, taskStatusCount)
 		}
 	}
@@ -109,6 +123,7 @@ func (cc *jobcontroller) killJob(jobInfo *apis.JobInfo, podRetainPhase state.Pha
 
 	job = job.DeepCopy()
 	// Job version is bumped only when job is killed
+	// bump version: 将版本号递增到一个新的、唯一的值
 	job.Status.Version++
 	job.Status.Pending = pending
 	job.Status.Running = running
@@ -119,10 +134,12 @@ func (cc *jobcontroller) killJob(jobInfo *apis.JobInfo, podRetainPhase state.Pha
 	job.Status.TaskStatusCount = taskStatusCount
 
 	// Update running duration
+	// 这里应该是保存上一次运行的时长（因为这里 killjob了）
 	klog.V(3).Infof("Running duration is %s", metav1.Duration{Duration: time.Since(jobInfo.Job.CreationTimestamp.Time)}.ToUnstructured())
 	job.Status.RunningDuration = &metav1.Duration{Duration: time.Since(jobInfo.Job.CreationTimestamp.Time)}
 
 	if updateStatus != nil {
+		// updateStatus 原地更新 job.status, 主要是更新 job.status.state
 		if updateStatus(&job.Status) {
 			job.Status.State.LastTransitionTime = metav1.Now()
 			jobCondition := newCondition(job.Status.State.Phase, &job.Status.State.LastTransitionTime)
@@ -149,6 +166,7 @@ func (cc *jobcontroller) killJob(jobInfo *apis.JobInfo, podRetainPhase state.Pha
 	}
 
 	// Delete PodGroup
+	// 这个函数是在 kill job，所以把 pg 也 kill 了
 	pgName := job.Name + "-" + string(job.UID)
 	if err := cc.vcClient.SchedulingV1beta1().PodGroups(job.Namespace).Delete(context.TODO(), pgName, metav1.DeleteOptions{}); err != nil {
 		if !apierrors.IsNotFound(err) {
@@ -165,6 +183,7 @@ func (cc *jobcontroller) killJob(jobInfo *apis.JobInfo, podRetainPhase state.Pha
 
 func (cc *jobcontroller) initiateJob(job *batch.Job) (*batch.Job, error) {
 	klog.V(3).Infof("Starting to initiate Job <%s/%s>", job.Namespace, job.Name)
+	// 如果 phase 为空，初始化 phase=pending
 	jobInstance, err := cc.initJobStatus(job)
 	if err != nil {
 		cc.recorder.Event(job, v1.EventTypeWarning, string(batch.JobStatusError),
@@ -172,13 +191,17 @@ func (cc *jobcontroller) initiateJob(job *batch.Job) (*batch.Job, error) {
 		return nil, err
 	}
 
+	// onCreateJobHook
 	if err := cc.pluginOnJobAdd(jobInstance); err != nil {
 		cc.recorder.Event(job, v1.EventTypeWarning, string(batch.PluginError),
 			fmt.Sprintf("Execute plugin when job add failed, err: %v", err))
 		return nil, err
 	}
 
-	newJob, err := cc.createJobIOIfNotExist(jobInstance)
+	// 这里猜测函数命名是 create job if and only if not exist 的意思，只能是这个committer真菜，下次记得用iff
+	// 猜错了，这里是 create Job IO IfNotExist， 里面实际是在做创建 pvc 的事情，真 sb, 命名成 createPVC 会死吗?
+	// IfNotExist 在命名中完全没必要说明，加个注释说明一下这是一个可重入的函数就行了
+	newJob, err := cc.createJobIOIfNotExist(jobInstance) // 创建 PVC
 	if err != nil {
 		cc.recorder.Event(job, v1.EventTypeWarning, string(batch.PVCError),
 			fmt.Sprintf("Failed to create PVC, err: %v", err))
@@ -256,7 +279,9 @@ func (cc *jobcontroller) syncJob(jobInfo *apis.JobInfo, updateStatus state.Updat
 	}
 
 	// Skip job initiation if job is already initiated
+	// 注意一个没有初始化的 job，其 state.phase = "" 空
 	if !isInitiated(job) {
+		// 创建pvc/pg
 		if job, err = cc.initiateJob(job); err != nil {
 			return err
 		}
@@ -267,6 +292,7 @@ func (cc *jobcontroller) syncJob(jobInfo *apis.JobInfo, updateStatus state.Updat
 		}
 	}
 
+	// 这是啥？看着像merge冲突了
 	if len(queueInfo.Spec.ExtendClusters) != 0 {
 		jobForwarding = true
 		job.Annotations[batch.JobForwardingKey] = "true"
@@ -281,6 +307,7 @@ func (cc *jobcontroller) syncJob(jobInfo *apis.JobInfo, updateStatus state.Updat
 	pgName := job.Name + "-" + string(job.UID)
 	if pg, _ := cc.pgLister.PodGroups(job.Namespace).Get(pgName); pg != nil {
 		if pg.Status.Phase != "" && pg.Status.Phase != scheduling.PodGroupPending {
+			// pg 已经启动，这时候已经有对应的 pod 被创建出来了，需要同步这些 pod 列表
 			syncTask = true
 		}
 
@@ -293,6 +320,7 @@ func (cc *jobcontroller) syncJob(jobInfo *apis.JobInfo, updateStatus state.Updat
 	}
 
 	var jobCondition batch.JobCondition
+	// 如果不 sync task, 简单更新下 job 的状态后退出（如果有传入状态更新函数的话）
 	if !syncTask {
 		if updateStatus != nil {
 			if updateStatus(&job.Status) {
@@ -315,6 +343,7 @@ func (cc *jobcontroller) syncJob(jobInfo *apis.JobInfo, updateStatus state.Updat
 		return nil
 	}
 
+	// 下面是更新 task 的逻辑
 	var running, pending, terminating, succeeded, failed, unknown int32
 	taskStatusCount := make(map[string]batch.TaskState)
 
@@ -342,17 +371,19 @@ func (cc *jobcontroller) syncJob(jobInfo *apis.JobInfo, updateStatus state.Updat
 			pods = map[string]*v1.Pod{}
 		}
 
-		var podToCreateEachTask []*v1.Pod
+		var podToCreateEachTask []*v1.Pod // 这里完全没有必要命名成 EachTask
 		for i := 0; i < int(ts.Replicas); i++ {
-			podName := fmt.Sprintf(jobhelpers.PodNameFmt, job.Name, name, i)
+			podName := fmt.Sprintf(jobhelpers.PodNameFmt, job.Name, name, i) // use MakePodName
 			if pod, found := pods[podName]; !found {
+				// 如果pod 不存在，就创建新的 pod，包括job  pending阶段的创建 pod，和pod running阶段 pod 被驱逐后的重建
 				newPod := createJobPod(job, tc, ts.TopologyPolicy, i, jobForwarding)
 				if err := cc.pluginOnPodCreate(job, newPod); err != nil {
 					return err
 				}
 				podToCreateEachTask = append(podToCreateEachTask, newPod)
-				waitCreationGroup.Add(1)
+				waitCreationGroup.Add(1) // 蠢货，不在 goroutine 创建时add，在这里 add
 			} else {
+				// 这里 delete，代表不想把podName加到 #L401 的 podToDelete里面
 				delete(pods, podName)
 				if pod.DeletionTimestamp != nil {
 					klog.Infof("Pod <%s/%s> is terminating", pod.Namespace, pod.Name)
@@ -364,8 +395,10 @@ func (cc *jobcontroller) syncJob(jobInfo *apis.JobInfo, updateStatus state.Updat
 				calcPodStatus(pod, taskStatusCount)
 			}
 		}
+		// 此时，pods 里的 pod 都是待删除的（因为不在 spec 里）
 		podToCreate[ts.Name] = podToCreateEachTask
 		for _, pod := range pods {
+			// 删除多的实例
 			podToDelete = append(podToDelete, pod)
 		}
 	}
@@ -375,6 +408,7 @@ func (cc *jobcontroller) syncJob(jobInfo *apis.JobInfo, updateStatus state.Updat
 			continue
 		}
 		go func(taskName string, podToCreateEachTask []*v1.Pod) {
+			// 很蠢，这里其实就是要一个 task_name->task 的映射而已，可以在前面构建好，而不是在这里再搞个什么 taskIndex
 			taskIndex := jobhelpers.GetTaskIndexUnderJob(taskName, job)
 			if job.Spec.Tasks[taskIndex].DependsOn != nil {
 				if !cc.waitDependsOnTaskMeetCondition(taskName, taskIndex, podToCreateEachTask, job) {
@@ -382,9 +416,10 @@ func (cc *jobcontroller) syncJob(jobInfo *apis.JobInfo, updateStatus state.Updat
 					// release wait group
 					for _, pod := range podToCreateEachTask {
 						go func(pod *v1.Pod) {
-							defer waitCreationGroup.Done()
+							defer waitCreationGroup.Done() // 这尼玛是什么？估计是之前这里有逻辑，现在没了。但是，既然删除了逻辑，就应该把这里一起改下。
 						}(pod)
 					}
+					// 直接 return，不进入后面的逻辑了
 					return
 				}
 			}
@@ -490,9 +525,11 @@ func (cc *jobcontroller) waitDependsOnTaskMeetCondition(taskName string, taskInd
 		return true
 	}
 	dependsOn := *job.Spec.Tasks[taskIndex].DependsOn
+	// 这里是要支持对依赖的 all / any , 写法太蠢了，直接就不支持其他的谓词predicate了
 	if len(dependsOn.Name) > 1 && dependsOn.Iteration == batch.IterationAny {
 		// any ready to create task, return true
 		for _, task := range dependsOn.Name {
+			// 检查前置任务是否 running
 			if cc.isDependsOnPodsReady(task, job) {
 				return true
 			}
@@ -502,6 +539,7 @@ func (cc *jobcontroller) waitDependsOnTaskMeetCondition(taskName string, taskInd
 	}
 	for _, dependsOnTask := range dependsOn.Name {
 		// any not ready to skip create task, return false
+		// 检查前置任务是否 running
 		if !cc.isDependsOnPodsReady(dependsOnTask, job) {
 			return false
 		}
@@ -510,6 +548,7 @@ func (cc *jobcontroller) waitDependsOnTaskMeetCondition(taskName string, taskInd
 	return true
 }
 
+// 检查依赖的任务的 pods的 的 running 数是否已经超过其 minAvail
 func (cc *jobcontroller) isDependsOnPodsReady(task string, job *batch.Job) bool {
 	dependsOnPods := jobhelpers.GetPodsNameUnderTask(task, job)
 	dependsOnTaskIndex := jobhelpers.GetTaskIndexUnderJob(task, job)
@@ -564,8 +603,12 @@ func (cc *jobcontroller) createJobIOIfNotExist(job *batch.Job) (*batch.Job, erro
 	}
 	for index, volume := range job.Spec.Volumes {
 		vcName := volume.VolumeClaimName
+		// 这里的意思是用户没有自己给volumn 一个名字，所以我们自己生成名字
 		if len(vcName) == 0 {
 			// NOTE(k82cn): Ensure never have duplicated generated names.
+			// 又是一个 sb 写法，这里的 for 的意思是尝试随机生成一个 pvc 的名字，如果名字存在，就重新生成
+			// 这种脏逻辑麻烦写在函数里，别放在主流程
+			// 另外最好搞成不可能冲突的，搞个毫秒时间戳+随机数，咋可能冲突，就可以丢掉这个脏逻辑了
 			for {
 				vcName = jobhelpers.GenPVCName(job.Name)
 				exist, err := cc.checkPVCExist(job, vcName)
@@ -581,6 +624,7 @@ func (cc *jobcontroller) createJobIOIfNotExist(job *batch.Job) (*batch.Job, erro
 			}
 			// TODO: check VolumeClaim must be set if VolumeClaimName is empty
 			if volume.VolumeClaim != nil {
+				// 调用 kubeclient 创建 pvc, 并设置 ownerRef
 				if err := cc.createPVC(job, vcName, volume.VolumeClaim); err != nil {
 					return job, err
 				}
@@ -595,6 +639,7 @@ func (cc *jobcontroller) createJobIOIfNotExist(job *batch.Job) (*batch.Job, erro
 			}
 		}
 		job.Status.ControlledResources["volume-pvc-"+vcName] = vcName
+		// 这里应该少了一个 needUpdate = true
 	}
 	if needUpdate {
 		newJob, err := cc.vcClient.BatchV1alpha1().Jobs(job.Namespace).Update(context.TODO(), job, metav1.UpdateOptions{})
@@ -650,6 +695,7 @@ func (cc *jobcontroller) createOrUpdatePodGroup(job *batch.Job) error {
 	var pg *scheduling.PodGroup
 	var err error
 	pg, err = cc.pgLister.PodGroups(job.Namespace).Get(pgName)
+	// 这里的处理很蠢，创建和更新的逻辑直接裸写在这个函数里，if err!=nil 里面是创建，外面是更新
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			klog.Errorf("Failed to get PodGroup for Job <%s/%s>: %v",
@@ -705,6 +751,7 @@ func (cc *jobcontroller) createOrUpdatePodGroup(job *batch.Job) error {
 		}
 	}
 
+	// 这里对pgShouldUpdate的处理虽然有点丑，但是胜在简单易懂，问题也不大
 	pgShouldUpdate := false
 	if pg.Spec.PriorityClassName != job.Spec.PriorityClassName {
 		pg.Spec.PriorityClassName = job.Spec.PriorityClassName
@@ -788,10 +835,12 @@ func (cc *jobcontroller) calcPGMinResources(job *batch.Job) *v1.ResourceList {
 
 	minReq := v1.ResourceList{}
 	podCnt := int32(0)
+	// 按优先级统计资源，先统计高优先级
+	// MinAvailable 的 pod 拉起顺序也是按优先级排，先拉起前面的MinAvailable个 pod，所以这里就统计了前MinAvailable个 pod 的资源
 	for _, task := range tasksPriority {
 		for i := int32(0); i < task.Replicas; i++ {
 			if podCnt >= job.Spec.MinAvailable {
-				break
+				break // 这里其实是 break 了所有循环，这个写法会有点费解，直接 return 比较好
 			}
 
 			podCnt++
@@ -830,6 +879,7 @@ func (cc *jobcontroller) initJobStatus(job *batch.Job) (*batch.Job, error) {
 	return newJob, nil
 }
 
+// 计算该 pod 对应 job 对应的 各个pod状态的 num。
 func classifyAndAddUpPodBaseOnPhase(pod *v1.Pod, pending, running, succeeded, failed, unknown *int32) {
 	switch pod.Status.Phase {
 	case v1.PodPending:
@@ -845,6 +895,8 @@ func classifyAndAddUpPodBaseOnPhase(pod *v1.Pod, pending, running, succeeded, fa
 	}
 }
 
+// 每个pod 的 annotation 上会挂一个 volcano.sh/task-spec, 这里就是计算该 pod 对应 task 对应的 各个pod状态的 num。
+// 函数名太傻逼了
 func calcPodStatus(pod *v1.Pod, taskStatusCount map[string]batch.TaskState) {
 	taskName, found := pod.Annotations[batch.TaskSpecKey]
 	if !found {

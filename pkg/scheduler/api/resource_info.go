@@ -383,6 +383,8 @@ func (r *Resource) Less(rr *Resource, defaultValue DimensionDefaultValue) bool {
 // Otherwise returns false.
 // @param defaultValue "default value for resource dimension not defined in ScalarResources. Its value can only be one of 'Zero' and 'Infinity'"
 func (r *Resource) LessEqual(rr *Resource, defaultValue DimensionDefaultValue) bool {
+	// 这个函数很有问题
+	// 严格命名是： lessOrGreaterNotThatMuch: 小于或者多得不多
 	lessEqualFunc := func(l, r, diff float64) bool {
 		if l < r || math.Abs(l-r) < diff {
 			return true

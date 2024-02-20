@@ -35,6 +35,10 @@ const (
 	PodNameFmt = "%s-%s-%d"
 	// persistentVolumeClaimFmt represents persistent volume claim name format
 	persistentVolumeClaimFmt = "%s-pvc-%s"
+
+	// 把这些模板统一声明，是有一定必要的，但是必须是形如：
+	// xxxFmt = "{a}-pvc-{b}"，占位符得明确其含义
+	// 不然的话，还不如直接用字面量
 )
 
 // GetPodIndexUnderTask returns task Index.

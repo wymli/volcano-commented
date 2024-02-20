@@ -118,8 +118,8 @@ func (pg *pgcontroller) Initialize(opt *framework.ControllerOption) error {
 
 // Run start NewPodgroupController.
 func (pg *pgcontroller) Run(stopCh <-chan struct{}) {
-	pg.informerFactory.Start(stopCh)
-	pg.vcInformerFactory.Start(stopCh)
+	pg.informerFactory.Start(stopCh)   // k8s 内置 informer factory
+	pg.vcInformerFactory.Start(stopCh) // 自定义资源 informer factory
 
 	for informerType, ok := range pg.informerFactory.WaitForCacheSync(stopCh) {
 		if !ok {
@@ -161,17 +161,20 @@ func (pg *pgcontroller) processNextReq() bool {
 		return true
 	}
 
+	// 查看pod 的调度器是不是 volcano，如果不是直接退出
 	if !commonutil.Contains(pg.schedulerNames, pod.Spec.SchedulerName) {
 		klog.V(5).Infof("pod %v/%v field SchedulerName is not matched", pod.Namespace, pod.Name)
 		return true
 	}
 
+	// 如果 pod 已经关联了 pg，直接退出（这里就是对应 vcjob 创建的 pod，在创建的时候就关联了 pg）
 	if pod.Annotations != nil && pod.Annotations[scheduling.KubeGroupNameAnnotationKey] != "" {
 		klog.V(5).Infof("pod %v/%v has created podgroup", pod.Namespace, pod.Name)
 		return true
 	}
 
 	// normal pod use volcano
+	// 这里是给那些非 vcjob 启动的 pod（但是指定了scheduler 为 volcano） 创建 pg
 	if err := pg.createNormalPodPGIfNotExist(pod); err != nil {
 		klog.Errorf("Failed to handle Pod <%s/%s>: %v", pod.Namespace, pod.Name, err)
 		pg.queue.AddRateLimited(req)

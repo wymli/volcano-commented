@@ -47,6 +47,7 @@ func (cc *jobcontroller) addCommand(obj interface{}) {
 	cc.commandQueue.Add(cmd)
 }
 
+// 这个函数会被注册在 informer 里
 func (cc *jobcontroller) addJob(obj interface{}) {
 	job, ok := obj.(*batch.Job)
 	if !ok {
@@ -62,6 +63,7 @@ func (cc *jobcontroller) addJob(obj interface{}) {
 	}
 
 	// TODO(k82cn): if failed to add job, the cache should be refresh
+	// 搞这个 cache 的原因应该是不想一直传递这个变量，所以就搞个中心化的地方存一下
 	if err := cc.cache.Add(job); err != nil {
 		klog.Errorf("Failed to add job <%s/%s>: %v in cache",
 			job.Namespace, job.Name, err)
@@ -141,6 +143,7 @@ func (cc *jobcontroller) addPod(obj interface{}) {
 		return
 	}
 	// Filter out pods that are not created from volcano job
+	// 检查pod 的 ownerRef 必须是 batch.volcano.sh/v1alpha1/Job
 	if !isControlledBy(pod, helpers.JobKind) {
 		return
 	}
@@ -287,6 +290,7 @@ func (cc *jobcontroller) updatePod(oldObj, newObj interface{}) {
 	queue.Add(req)
 }
 
+// podInformer: deletePod event handler
 func (cc *jobcontroller) deletePod(obj interface{}) {
 	pod, ok := obj.(*v1.Pod)
 	if !ok {

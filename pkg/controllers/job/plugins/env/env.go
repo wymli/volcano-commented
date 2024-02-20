@@ -44,17 +44,20 @@ func (ep *envPlugin) Name() string {
 
 func (ep *envPlugin) OnPodCreate(pod *v1.Pod, job *batch.Job) error {
 	index := jobhelpers.GetPodIndexUnderTask(pod)
+	taskName := jobhelpers.GetTaskKey(pod)
 
 	// add VK_TASK_INDEX and VC_TASK_INDEX env to each container
 	for i := range pod.Spec.Containers {
 		pod.Spec.Containers[i].Env = append(pod.Spec.Containers[i].Env, v1.EnvVar{Name: TaskVkIndex, Value: index})
 		pod.Spec.Containers[i].Env = append(pod.Spec.Containers[i].Env, v1.EnvVar{Name: TaskIndex, Value: index})
+		pod.Spec.Containers[i].Env = append(pod.Spec.Containers[i].Env, v1.EnvVar{Name: TaskName, Value: taskName})
 	}
 
 	// add VK_TASK_INDEX and VC_TASK_INDEX env to each init container
 	for i := range pod.Spec.InitContainers {
 		pod.Spec.InitContainers[i].Env = append(pod.Spec.InitContainers[i].Env, v1.EnvVar{Name: TaskVkIndex, Value: index})
 		pod.Spec.InitContainers[i].Env = append(pod.Spec.InitContainers[i].Env, v1.EnvVar{Name: TaskIndex, Value: index})
+		pod.Spec.Containers[i].Env = append(pod.Spec.Containers[i].Env, v1.EnvVar{Name: TaskName, Value: taskName})
 	}
 
 	return nil

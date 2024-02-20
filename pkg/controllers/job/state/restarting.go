@@ -41,6 +41,10 @@ func (ps *restartingState) Execute(action v1alpha1.Action) error {
 			total += task.Replicas
 		}
 
+		// 这一步没看懂？
+		// MinAvailable 的含义：
+		// 	如果拉起的 pod数超过了MinAvailable，job 就置为 running；
+		// 	如果成功/失败的 pod 数超过了MinAvailable，job 就置为...
 		if total-status.Terminating >= status.MinAvailable {
 			status.State.Phase = vcbatch.Pending
 			return true

@@ -51,7 +51,7 @@ type Session struct {
 	restConfig      *rest.Config
 	informerFactory informers.SharedInformerFactory
 
-	TotalResource *api.Resource
+	TotalResource *api.Resource // 是所有节点Allocatable的资源
 	// podGroupStatus cache podgroup status during schedule
 	// This should not be mutated after initiated
 	podGroupStatus map[api.JobID]scheduling.PodGroupStatus

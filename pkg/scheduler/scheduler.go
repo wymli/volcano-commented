@@ -56,6 +56,7 @@ type Scheduler struct {
 }
 
 // NewScheduler returns a Scheduler
+// 牛批，反向引用，pkg 包引用 cmd 包，这个 option 教条点的还就是该定义两份，这个可以有效的解决 pkg.option.servers []string, cmd.option.servers string(逗号分隔)的问题
 func NewScheduler(config *rest.Config, opt *options.ServerOption) (*Scheduler, error) {
 	var watcher filewatcher.FileWatcher
 	if opt.SchedulerConf != "" {
@@ -93,7 +94,7 @@ func (pc *Scheduler) Run(stopCh <-chan struct{}) {
 	if options.ServerOpts.EnableCacheDumper {
 		pc.dumper.ListenForSignal(stopCh)
 	}
-	go runSchedulerSocket()
+	go runSchedulerSocket() // 动态设置 klog level 的 server
 }
 
 // runOnce executes a single scheduling cycle. This function is called periodically
@@ -146,6 +147,8 @@ func (pc *Scheduler) loadSchedulerConf() {
 
 	var config string
 	if len(pc.schedulerConf) != 0 {
+		// 这里太散了，应该提供两个方法： getSchedulerConfFromFile(), getSchedulerConfFromString()
+		// getSchedulerConfFromString 暴露的意义，一方面是getSchedulerConfFromFile，另外就是可以用作单测
 		confData, err := os.ReadFile(pc.schedulerConf)
 		if err != nil {
 			klog.Errorf("Failed to read the Scheduler config in '%s', using previous configuration: %v",
@@ -161,6 +164,7 @@ func (pc *Scheduler) loadSchedulerConf() {
 		return
 	}
 
+	// 可配置的变量，最好还是放在一个结构里吧
 	pc.mutex.Lock()
 	pc.actions = actions
 	pc.plugins = plugins

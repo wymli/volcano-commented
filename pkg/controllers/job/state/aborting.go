@@ -29,6 +29,7 @@ type abortingState struct {
 func (ps *abortingState) Execute(action v1alpha1.Action) error {
 	switch action {
 	case v1alpha1.ResumeJobAction:
+		// 允许拦截 aborting，恢复job，置为 Restarting
 		return KillJob(ps.job, PodRetainPhaseSoft, func(status *vcbatch.JobStatus) bool {
 			status.State.Phase = vcbatch.Restarting
 			status.RetryCount++

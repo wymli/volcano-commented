@@ -72,6 +72,7 @@ func (f *FitErrors) Error() string {
 		return f.err
 	}
 
+	// 拿到每个错误的数量
 	reasons := make(map[string]int)
 	for _, node := range f.nodes {
 		for _, reason := range node.Reasons {

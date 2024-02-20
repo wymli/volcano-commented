@@ -71,6 +71,7 @@ func (pg *pgcontroller) addReplicaSet(obj interface{}) {
 	}
 
 	if *rs.Spec.Replicas == 0 {
+		// TODO(liweiming ) 这里是啥意思，为啥要删除 pg？
 		pgName := batchv1alpha1.PodgroupNamePrefix + string(rs.UID)
 		err := pg.vcClient.SchedulingV1beta1().PodGroups(rs.Namespace).Delete(context.TODO(), pgName, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
@@ -235,6 +236,7 @@ func (pg *pgcontroller) createNormalPodPGIfNotExist(pod *v1.Pod) error {
 }
 
 func newPGOwnerReferences(pod *v1.Pod) []metav1.OwnerReference {
+	// 默认使用 pod 的 owner
 	if len(pod.OwnerReferences) != 0 {
 		for _, ownerReference := range pod.OwnerReferences {
 			if ownerReference.Controller != nil && *ownerReference.Controller {
@@ -243,6 +245,7 @@ func newPGOwnerReferences(pod *v1.Pod) []metav1.OwnerReference {
 		}
 	}
 
+	// 如果pod 没有 owner，pg 的 owner就是 pod（这种情况下，之前创建 pg 的时候，uid 也是填的 pod.uid）
 	gvk := schema.GroupVersionKind{
 		Group:   v1.SchemeGroupVersion.Group,
 		Version: v1.SchemeGroupVersion.Version,

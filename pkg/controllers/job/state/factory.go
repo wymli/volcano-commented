@@ -47,8 +47,11 @@ var PodRetainPhaseSoft = PhaseMap{
 
 var (
 	// SyncJob will create or delete Pods according to Job's spec.
+	//  func(job *apis.JobInfo, fn UpdateStatusFn) error
 	SyncJob ActionFn
+
 	// KillJob kill all Pods of Job with phase not in podRetainPhase.
+	//  func(job *apis.JobInfo, podRetainPhase PhaseMap, fn UpdateStatusFn) error
 	KillJob KillActionFn
 )
 

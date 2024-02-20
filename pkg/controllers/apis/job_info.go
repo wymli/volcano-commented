@@ -30,6 +30,8 @@ type JobInfo struct {
 	Name      string
 
 	Job  *batch.Job
+
+	// taskName 2 podName 2 pod
 	Pods map[string]map[string]*v1.Pod
 }
 

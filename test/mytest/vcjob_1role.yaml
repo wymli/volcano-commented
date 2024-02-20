@@ -1,0 +1,57 @@
+# kubectl cp /Users/bytedance/code/delve/cmd/dlv/dlv xxx:/ -n volcano-system
+# ./dlv exec ./vc-controller-manager -- --logtostderr --enable-healthz=true --leader-elect=false -v=4 2>&1
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: job-1
+spec:
+  schedulerName: volcano
+  queue: default
+  policies:
+    # - event: PodFailed
+    #   action: TerminateJob
+    # - event: PodEvicted
+    #   action: TerminateJob
+  maxRetry: 3 # Specifies the maximum number of retries before marking this Job failed.
+  minAvailable: null # DoNotEdit: will be auto calculated; num_ps + num_driver(must=1) + num_chief(must=1)
+  minSuccess: 1 # The minimal success pods to run for this Job. math.ceil((num_chief + num_worker) * success_ratio) TODO(liweiming) 看下这个怎么设置
+  # priorityClassName: null # 优先级资源: kubectl get pc 拿到可用的优先级列表
+  ttlSecondsAfterFinished: 604800 # 604800: 7天, 7 * 24 * 60 * 60; 0: delete job resource immediately after finished(completed/failed), null: never delete. controlled by garbagecollector.
+  plugins:
+    env: []
+    svc: []
+  tasks:
+    - name: driver # must be lowercase alphanumeric characters or '-'
+      replicas: 10
+      policies:
+      maxRetry: 1
+      template:
+        spec:
+          containers:
+            - name: main
+              image: python:3.8 # 内置依赖 byted_primus_io
+              workingDir: /workspace
+              env:
+                - name: cmd
+                  value: |
+                    ls
+                    sec=$(python3 -c "import random; print(random.randrange(30))")
+                    sleep $sec
+              command: ["bash"]
+              args: ["-c", "$(cmd)"]
+              volumeMounts:
+                - name: data
+                  mountPath: /workspace
+              resources:
+                requests:
+                  cpu: 0.01
+                  memory: "10Mi"
+                limits:
+                  cpu: 0.01
+                  memory: "10Mi"
+          volumes:
+            - name: data
+              emptyDir: {}
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 30 # 30 * 60s
+          activeDeadlineSeconds: 86400 # 1天; pod 最长运行时间
